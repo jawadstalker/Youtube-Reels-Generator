@@ -1,84 +1,110 @@
 import subprocess
-from pytube import YouTube
-import openai
+import yt_dlp
 import os
 
-# ست کردن کلید OpenAI
-openai.api_key = "YOUR_OPENAI_API_KEY"
+# ------------------------------------------
+# Download subtitles only (no full video)
+# ------------------------------------------
+def download_subtitles_only(url, subs_name="subtitle.srt"):
+    ydl_opts = {
+        "skip_download": True,          # فقط زیرنویس
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["en"],
+        "outtmpl": "temp",
+    }
 
-def download_video_and_subs(url):
-    yt = YouTube(url)
-    video_stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-    video_path = "video.mp4"
-    video_stream.download(filename=video_path)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
 
-    if 'en' in yt.captions:
-        caption = yt.captions['en']
-    elif 'en-US' in yt.captions:
-        caption = yt.captions['en-US']
+    # پیدا کردن فایل .vtt
+    vtt_file = None
+    for f in os.listdir():
+        if f.endswith(".vtt"):
+            vtt_file = f
+            break
+
+    if vtt_file:
+        # تبدیل به srt
+        subprocess.run(["ffmpeg", "-y", "-i", vtt_file, subs_name])
+        with open(subs_name, "r", encoding="utf-8") as f:
+            return f.read()
     else:
-        caption = None
-
-    if caption:
-        subs_text = caption.generate_srt_captions()
-        with open("subtitle.srt", "w", encoding="utf-8") as f:
-            f.write(subs_text)
-        print("✅ Subtitle downloaded.")
-    else:
-        subs_text = ""
         print("⚠️ No English subtitles found.")
+        return ""
 
-    return video_path, subs_text
 
-def get_best_30_seconds(subs_text):
-    if not subs_text:
-        return 0, 30  
+# ------------------------------------------
+# Download selected 30-second clip
+# ------------------------------------------
+def download_selected_clip(url, start, end, output="reel.mp4"):
+    duration = end - start
 
-    prompt = f"""
-    You are a video editor AI. Given the following transcript of a YouTube video, select the most engaging 30 seconds
-    for a short reel. Provide start and end times in seconds as JSON: {{"start": , "end": }}.
-    Transcript:
-    {subs_text}
-    """
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role":"user","content":prompt}]
-    )
+    ydl_opts = {
+        "format": "bestvideo[height<=720]+bestaudio/best[height<=720]",
+    }
 
-    import json
-    try:
-        times_json = response['choices'][0]['message']['content']
-        times = json.loads(times_json)
-        return times["start"], times["end"]
-    except:
-        return 0, 30
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
 
-def cut_clip(video_path, start, end, output_path="reel.mp4"):
+    # پیدا کردن بهترین فرمت mp4
+    formats = info.get("formats", [])
+    best_format = None
+    for f in formats:
+        if f.get("ext") == "mp4" and f.get("height") and f["height"] <= 720:
+            best_format = f
+            break
+
+    if not best_format:
+        raise Exception("No suitable MP4 format found")
+
+    video_url = best_format["url"]
+
+    # برش با ffmpeg
     subprocess.run([
         "ffmpeg", "-y",
-        "-i", video_path,
         "-ss", str(start),
-        "-to", str(end),
+        "-i", video_url,
+        "-t", str(duration),
         "-c", "copy",
-        output_path
+        output
     ])
-    return output_path
+    return output
 
-def add_subtitles(video_path, subs_path, output_path="reel_with_subs.mp4"):
-    if not os.path.exists(subs_path):
-        return video_path  
+
+
+# ------------------------------------------
+# Burn subtitles on the clip
+# ------------------------------------------
+def add_subtitles(video_path, subs_path, output="reel_with_subs.mp4"):
     subprocess.run([
         "ffmpeg", "-y",
         "-i", video_path,
         "-vf", f"subtitles={subs_path}",
-        output_path
+        output
     ])
-    return output_path
+    return output
 
+
+# ------------------------------------------
+# Main
+# ------------------------------------------
 if __name__ == "__main__":
-    url = input("Enter YouTube video URL: ")
-    video_path, subs_text = download_video_and_subs(url)
-    start, end = get_best_30_seconds(subs_text)
-    clip_path = cut_clip(video_path, start, end)
-    final_path = add_subtitles(clip_path, "subtitle.srt")
-    print(f"✅ Finished! Output: {final_path}")
+    url = input("Enter YouTube URL: ")
+
+    # دانلود زیرنویس
+    subs_text = download_subtitles_only(url)
+
+    # کاربر دستی زمان شروع و پایان را وارد می‌کند
+    start = float(input("Enter start time in seconds: "))
+    end = float(input("Enter end time in seconds: "))
+
+    print("🎬 Selected section:", start, "→", end)
+
+    # دانلود و برش ویدیو
+    clip = download_selected_clip(url, start, end)
+
+    # چسباندن زیرنویس
+    final = add_subtitles(clip, "subtitle.srt")
+
+    print("✅ Done! Output:", final)
