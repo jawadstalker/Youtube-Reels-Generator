@@ -1,110 +1,141 @@
-import subprocess
-import yt_dlp
 import os
+import re
+from urllib.parse import urlparse, parse_qs
+import yt_dlp
+from moviepy.video.io.VideoFileClip import VideoFileClip
 
-# ------------------------------------------
-# Download subtitles only (no full video)
-# ------------------------------------------
-def download_subtitles_only(url, subs_name="subtitle.srt"):
-    ydl_opts = {
-        "skip_download": True,          # فقط زیرنویس
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": ["en"],
-        "outtmpl": "temp",
-    }
+def download_youtube_video(url, start_time, output_path="downloads"):
+    """
+    Download YouTube video and cut specific segment
+    """
+    try:
+        # Create downloads folder if it doesn't exist
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        # Configure yt-dlp options
+        ydl_opts = {
+            'format': 'best[height<=480]',  # Max 720p to avoid huge files
+            'outtmpl': os.path.join(output_path, 'temp_video.%(ext)s'),
+            'quiet': False,
+            'no_warnings': False,
+        }
 
-    # پیدا کردن فایل .vtt
-    vtt_file = None
-    for f in os.listdir():
-        if f.endswith(".vtt"):
-            vtt_file = f
-            break
+        print("📹 Getting video information...")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Get video info
+            info = ydl.extract_info(url, download=False)
+            video_title = info.get('title', 'video')
+            
+            print(f"📹 Downloading: {video_title}")
+            
+            # Download the video
+            ydl.download([url])
+            
+            # Find the downloaded file
+            temp_files = [f for f in os.listdir(output_path) if f.startswith('temp_video.')]
+            if not temp_files:
+                print("❌ Downloaded file not found!")
+                return None
+                
+            video_path = os.path.join(output_path, temp_files[0])
 
-    if vtt_file:
-        # تبدیل به srt
-        subprocess.run(["ffmpeg", "-y", "-i", vtt_file, subs_name])
-        with open(subs_name, "r", encoding="utf-8") as f:
-            return f.read()
+        # Cut the video
+        safe_title = re.sub(r'[^\w\-_.]', '', video_title.replace(' ', '_'))
+        output_filename = f"cut_{safe_title}.mp4"
+        output_filepath = os.path.join(output_path, output_filename)
+        
+        cut_video(video_path, output_filepath, start_time, start_time + 30)
+        
+        # Clean up temporary file
+        os.remove(video_path)
+        
+        print(f"✅ Download and cutting completed: {output_filename}")
+        return output_filepath
+        
+    except Exception as e:
+        print(f"❌ Error processing video: {str(e)}")
+        return None
+
+def cut_video(input_path, output_path, start_time, end_time):
+    """
+    Cut video from start time to end time
+    """
+    try:
+        # Load video
+        video = VideoFileClip(input_path)
+        
+        # Validate time range
+        if start_time > video.duration:
+            raise ValueError(f"Start time {start_time}s exceeds video duration {video.duration}s")
+        
+        end_time = min(end_time, video.duration)
+        
+        # Cut video
+        cut_video = video.subclip(start_time, end_time)
+        
+        # Save cut video
+        cut_video.write_videofile(
+            output_path,
+            codec='libx264',
+            audio_codec='aac',
+            temp_audiofile='temp-audio.m4a',
+            remove_temp=True
+        )
+        
+        # Close videos to free resources
+        video.close()
+        cut_video.close()
+        
+        print(f"✂️ Video cut from {start_time}s to {end_time}s")
+        
+    except Exception as e:
+        print(f"❌ Error cutting video: {str(e)}")
+        raise
+
+def get_time_input(prompt):
+    """
+    Get time input from user in minutes:seconds format
+    """
+    while True:
+        try:
+            time_str = input(prompt)
+            if ':' in time_str:
+                minutes, seconds = map(int, time_str.split(':'))
+                total_seconds = minutes * 60 + seconds
+            else:
+                total_seconds = int(time_str)
+            
+            if total_seconds >= 0:
+                return total_seconds
+            else:
+                print("❌ Time must be a positive number!")
+        except ValueError:
+            print("❌ Invalid time format! Please use minutes:seconds or seconds")
+
+def main():
+    """
+    Main function
+    """
+    print("🎬 YouTube 30-Second Clip Downloader")
+    print("=" * 50)
+    
+    # Get user input
+    youtube_url = input("🔗 Enter YouTube URL: ").strip()
+    
+    print("\n⏰ Enter start time:")
+    print("Example: 120 or 2:00 (for 2 minutes)")
+    start_time = get_time_input("Start time: ")
+    
+    # Download and cut video
+    result = download_youtube_video(youtube_url, start_time)
+    
+    if result:
+        print(f"\n🎉 Operation completed successfully!")
+        print(f"📁 File saved at: {result}")
     else:
-        print("⚠️ No English subtitles found.")
-        return ""
+        print("\n❌ Operation failed!")
 
-
-# ------------------------------------------
-# Download selected 30-second clip
-# ------------------------------------------
-def download_selected_clip(url, start, end, output="reel.mp4"):
-    duration = end - start
-
-    ydl_opts = {
-        "format": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
-    # پیدا کردن بهترین فرمت mp4
-    formats = info.get("formats", [])
-    best_format = None
-    for f in formats:
-        if f.get("ext") == "mp4" and f.get("height") and f["height"] <= 720:
-            best_format = f
-            break
-
-    if not best_format:
-        raise Exception("No suitable MP4 format found")
-
-    video_url = best_format["url"]
-
-    # برش با ffmpeg
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-ss", str(start),
-        "-i", video_url,
-        "-t", str(duration),
-        "-c", "copy",
-        output
-    ])
-    return output
-
-
-
-# ------------------------------------------
-# Burn subtitles on the clip
-# ------------------------------------------
-def add_subtitles(video_path, subs_path, output="reel_with_subs.mp4"):
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-vf", f"subtitles={subs_path}",
-        output
-    ])
-    return output
-
-
-# ------------------------------------------
-# Main
-# ------------------------------------------
 if __name__ == "__main__":
-    url = input("Enter YouTube URL: ")
-
-    # دانلود زیرنویس
-    subs_text = download_subtitles_only(url)
-
-    # کاربر دستی زمان شروع و پایان را وارد می‌کند
-    start = float(input("Enter start time in seconds: "))
-    end = float(input("Enter end time in seconds: "))
-
-    print("🎬 Selected section:", start, "→", end)
-
-    # دانلود و برش ویدیو
-    clip = download_selected_clip(url, start, end)
-
-    # چسباندن زیرنویس
-    final = add_subtitles(clip, "subtitle.srt")
-
-    print("✅ Done! Output:", final)
+    main()
